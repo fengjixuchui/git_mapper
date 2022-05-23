@@ -22,7 +22,7 @@ std::int32_t main( ) {
 	std::wcout << "--+ is_mapped:\t" << std::boolalpha << ptr< bool >( driver.is_mapped( ) ) << std::endl;
 	std::wcout << "--+ is_valid:\t" << std::boolalpha << ptr< bool >( driver.is_valid( ) ) << std::endl;
 
-	auto images{ nt::kernel_module( ) };
+	auto images{ nt::fetch_kernel_modules( ) };
 	if ( images.empty( ) )
 		return 0;
 
