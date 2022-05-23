@@ -26,6 +26,8 @@ std::int32_t main( ) {
 	if ( images.empty( ) )
 		return 0;
 
+	// :)
+
 #ifndef __debug
 	std::wcout.clear( wcout );
 	std::wcerr.clear( wcerr );
