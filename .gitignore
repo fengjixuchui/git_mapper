@@ -1,5 +1,12 @@
-﻿################################################################################
-# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
-################################################################################
+# .gitignore
 
-/.vs/git_mapper/v16
+/aniware.vcxproj
+/.vs
+/obj
+/bin
+/git_mapper.vcxproj.filters
+/git_mapper.vcxproj.user
+/git_mapper.sln
+/.gitignore
+/.gitattributes
+/git_mapper.vcxproj
