@@ -197,8 +197,8 @@ namespace nt {
 		[[ nodiscard ]]
 		const std::ptrdiff_t open_device(
 			const std::int32_t access,
-			const std::int32_t mode,
-			const std::int32_t attribute
+			const std::int32_t mode = mode_t::open_existing,
+			const std::int32_t attribute = attr_t::normal
 		) {
 			if ( !mode || !attribute )
 				return 0;
@@ -209,22 +209,91 @@ namespace nt {
 			return ptr< call_t >( &CreateFileW )( L"\\\\.\\Nal", access, 0, 0, mode, attribute, 0 );
 		}
 
-		[[ nodiscard ]]
-		const std::ptrdiff_t get( ) {
-			if ( !is_valid( ) || !is_mapped( ) ) {
-				std::wcerr << "--+ invalid entry or driver not mapped" << std::endl;
+		const std::ptrdiff_t map_io(
+			const std::ptrdiff_t src,
+			const std::uint32_t size
+		) {
+			if ( !is_valid( ) || !is_mapped( ) )
 				return 0;
-			}
 
-			auto ctx{ open_device( file_t::read_access | file_t::write_access, 
-				mode_t::open_existing, attr_t::normal ) };
-			if ( !ctx || ctx == -1 ) {
-				std::wcerr << "--+ failed to open device" << std::endl;
+			auto ctx{ open_device( file_t::read_access | file_t::write_access ) };
+			if ( !ctx || ctx == -1 )
 				return 0;
-			}
-			return ctx;
+
+			struct map_io_t {
+				std::uint64_t m_index, m_unused, m_reserved;
+				std::ptrdiff_t m_dst, m_src;
+				std::uint32_t m_size;
+			};
+
+			map_io_t call{
+				.m_index = 0x19, 
+				.m_src = ptr< >( src ),
+				.m_size = size
+			};
+
+			if ( !io_ctl< map_io_t >( ctx, &call ) || !close_device( ctx ) )
+				return 0;
+
+			return call.m_dst;
 		}
-	public:
+
+		const std::uint8_t unmap_io(
+			const std::ptrdiff_t src,
+			const std::uint32_t size
+		) {
+			if ( !is_valid( ) || !is_mapped( ) )
+				return 0;
+
+			auto ctx{ open_device( file_t::read_access | file_t::write_access ) };
+			if ( !ctx || ctx == -1 )
+				return 0;
+
+			struct map_io_t {
+				std::uint64_t m_index, m_unused, m_reserved;
+				std::ptrdiff_t m_src, m_dst;
+				std::uint32_t m_size;
+			};
+
+			map_io_t call{
+				.m_index = 0x1a, 
+				.m_src = ptr< >( src ),
+				.m_size = size
+			};
+
+			if ( !io_ctl< map_io_t >( ctx, &call ) || !close_device( ctx ) )
+				return 0;
+
+			return 1;
+		}
+
+		const std::ptrdiff_t fetch_physical(
+			const std::ptrdiff_t src
+		) {
+			if ( !is_valid( ) || !is_mapped( ) )
+				return 0;
+
+			auto ctx{ open_device( file_t::read_access | file_t::write_access ) };
+			if ( !ctx || ctx == -1 )
+				return 0;
+
+			struct phys_mem_t {
+				std::uint64_t m_index, m_unused;
+				std::ptrdiff_t m_dst, m_src;
+			};
+
+			phys_mem_t call{
+				.m_index = 0x25, 
+				.m_src = ptr< >( src )
+			};
+
+			if ( !io_ctl< phys_mem_t >( ctx, &call ) || !close_device( ctx ) )
+				return 0;
+
+			return call.m_dst;
+		}
+
+public:
 		template< typename type_t >
 		[[ nodiscard ]]
 		const type_t read(
@@ -232,12 +301,11 @@ namespace nt {
 			const std::size_t size = sizeof( type_t )
 		) {
 			if ( !is_valid( ) || !is_mapped( ) )
-				return 0;
+				return type_t{ };
 
-			auto ctx{ open_device( file_t::read_access | file_t::write_access, 
-				mode_t::open_existing, attr_t::normal ) };
+			auto ctx{ open_device( file_t::read_access | file_t::write_access ) };
 			if ( !ctx || ctx == -1 )
-				return 0;
+				return type_t{ };
 
 			struct copy_mem_t {
 				std::uint64_t m_index, m_unused;
@@ -245,19 +313,19 @@ namespace nt {
 				std::size_t m_size;
 			};
 
-			type_t out{ };
+			type_t buffer{ };
 
 			copy_mem_t call{ 
 				.m_index = 0x33, 
-				.m_src = ptr< std::ptrdiff_t >( src ), 
-				.m_dst = ptr< std::ptrdiff_t >( &out ),
+				.m_src = ptr< >( src ), 
+				.m_dst = ptr< >( &buffer ),
 				.m_size = size
 			};
 
 			if ( !io_ctl< copy_mem_t >( ctx, &call ) || !close_device( ctx ) )
-				return 0;
+				return type_t{ };
 
-			return out;
+			return buffer;
 		}
 
 		template< typename type_t >
@@ -269,9 +337,132 @@ namespace nt {
 			if ( !is_valid( ) || !is_mapped( ) )
 				return 0;
 
-			auto ctx{ open_device( file_t::read_access | file_t::write_access, 
-				mode_t::open_existing, attr_t::normal ) };
+			auto ctx{ open_device( file_t::read_access | file_t::write_access ) };
 			if ( !ctx || ctx == -1 )
+				return 0;
+
+			struct copy_mem_t {
+				std::uint64_t m_index, m_unused;
+				std::ptrdiff_t m_src, m_dst;
+				std::size_t m_size;
+			};
+
+			copy_mem_t call{
+				.m_index = 0x33, 
+				.m_src = ptr< >( &src ), 
+				.m_dst = ptr< >( dst ),
+				.m_size = size
+			};
+
+			if ( !io_ctl< copy_mem_t >( ctx, &call ) || !close_device( ctx ) )
+				return 0;
+
+			return 1;
+		}
+
+		template< typename type_t, typename... arg_t >
+		type_t call(
+			const std::ptrdiff_t address,
+			arg_t... args
+		) {
+			auto ntdll{ GetModuleHandleW( L"ntdll.dll" ) };
+			if ( !ntdll ) {
+				std::wcout << "--+ failed to get ntdll.dll" << std::endl;
+				return type_t{ };
+			}
+
+			auto addr{ ptr< >( GetProcAddress( ntdll, "NtAddAtom" ) ) };
+			if ( !addr ) {
+				std::wcout << "--+ failed to get NtAddAtom" << std::endl;
+				return type_t{ };
+			}
+
+			std::uint8_t jmp[ 12 ] = { 0x48, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0xe0 };
+			std::uint8_t old[ 12 ] = { 0x48, 0x83, 0xec, 0x28, 0x45, 0x33, 0xc9, 0xe8, 0x14, 0x5a, 0xd6, 0xff };
+
+			*ptr< std::ptrdiff_t* >( &jmp[ 2 ] ) = address;
+			if ( !address ) {
+				std::wcout << "--+ bad function address" << std::endl;
+				return type_t{ };
+			}
+
+			auto images{ fetch_kernel_modules( ) };
+			if ( images.empty( ) ) {
+				std::wcout << "--+ failed to get modules" << std::endl;
+				return type_t{ };
+			}
+
+			auto kernel{ fetch_export( images[ L"ntoskrnl.exe" ], L"NtAddAtom" ) };
+			if ( !kernel ) {
+				std::wcout << "--+ failed to get kernel NtAddAtom" << std::endl;
+				return type_t{ };
+			}
+
+			auto ctx{ map_io( fetch_physical( kernel ), 12 ) };
+			if ( !ctx ) {
+				std::wcout << "--+ failed to map_io kernel address" << std::endl;
+				return type_t{ };
+			}
+
+			for ( std::size_t i{ }; i < 12; i++ )
+				write< std::uint8_t >( ctx + i, jmp[ i ] );
+			
+			auto ret{ ptr< type_t( __stdcall* )( arg_t... ) >( addr )( args... ) };
+			
+			for ( std::size_t i{ }; i < 12; i++ )
+				write< std::uint8_t >( ctx + i, old[ i ] );
+
+			if ( !unmap_io( ctx, 12 ) ) {
+				std::wcout << "--+ failed to unmap_io kernel address" << std::endl;
+				return type_t{ };
+			}
+
+			return ret;
+		}
+
+		[[ nodiscard ]]
+		const std::ptrdiff_t fetch_export(
+			const std::pair< std::ptrdiff_t, std::size_t >module,
+			const std::wstring_view function
+		) {
+			if ( !is_valid( ) || !is_mapped( ) )
+				return 0;
+
+			auto images{ fetch_kernel_modules( ) };
+			if ( images.empty( ) )
+				return 0;
+
+			struct dos_header_t {
+				std::uint16_t m_magic;
+				std::int8_t m_pad0[58];
+				std::uint32_t m_next;
+			};
+
+			struct nt_headers_t {
+				std::uint16_t m_magic;
+				std::int8_t m_pad0[132];
+				std::int32_t m_address, m_size;
+				std::int8_t m_pad1[120];
+			};
+
+			auto ctx{ open_device( file_t::read_access | file_t::write_access ) };
+			if ( !ctx || ctx == -1 )
+				return{ };
+
+			dos_header_t dos_header{ read< dos_header_t >( std::get< 0 >( module ) ) };
+			nt_headers_t nt_headers{ read< nt_headers_t >( std::get< 0 >( module ) + dos_header.m_next ) };
+
+			if ( dos_header.m_magic != 'ZM' || nt_headers.m_magic != 'EP' )
+				return 0;
+
+			struct export_dir_t {
+				std::int8_t m_pad0[24];
+				std::int32_t m_count, m_fn_ptr;
+				std::int32_t m_tag_ptr, m_ord_ptr;
+			};
+
+			auto dir{ mem_alloc< export_dir_t* >( 0, nt_headers.m_size ) };
+			if ( !dir )
 				return 0;
 
 			struct copy_mem_t {
@@ -282,15 +473,44 @@ namespace nt {
 
 			copy_mem_t call{ 
 				.m_index = 0x33, 
-				.m_src = ptr< std::ptrdiff_t >( &src ), 
-				.m_dst = ptr< std::ptrdiff_t >( dst ),
-				.m_size = size
+				.m_src = ptr< >( std::get< 0 >( module ) + nt_headers.m_address ), 
+				.m_dst = ptr< >( dir ),
+				.m_size = ptr< std::size_t >( nt_headers.m_size )
 			};
 
-			if ( !io_ctl< copy_mem_t >( ctx, &call ) || !close_device( ctx ) )
+			if ( !io_ctl< copy_mem_t >( ctx, &call ) || !close_device( ctx ) ) {
+				mem_free( dir, nt_headers.m_size );
 				return 0;
+			}
 
-			return 1;
+			auto rva{ ptr< >( dir ) - nt_headers.m_address };
+			if ( !rva ) {
+				mem_free( dir, nt_headers.m_size );
+				return 0;
+			}
+
+			auto fn_tag{ ptr< std::uint32_t* >( dir->m_tag_ptr + rva ) };
+			auto fn_ord{ ptr< std::uint16_t* >( dir->m_ord_ptr + rva ) };
+			auto fn_ptr{ ptr< std::uint32_t* >( dir->m_fn_ptr + rva ) };
+
+			if ( !fn_tag || !fn_ord || !fn_ptr ) {
+				mem_free( dir, nt_headers.m_size );
+				return 0;
+			}
+
+			for ( std::size_t i{ }; i < dir->m_count; i++ ) {
+				std::string name{ ptr< char* >( fn_tag[i] + rva ) };
+				if ( name.empty( ) )
+					continue;
+
+				if ( function == std::wstring{ name.begin( ), name.end( ) } ) {
+					mem_free( dir, nt_headers.m_size );
+					return ptr< >( std::get< 0 >( module ) + fn_ptr[fn_ord[i]] );
+				}
+			}
+
+			mem_free( dir, nt_headers.m_size );
+			return 0;
 		}
 
 		[[ nodiscard ]]
@@ -298,8 +518,7 @@ namespace nt {
 			if ( m_registry.empty( ) || m_path.empty( ) )
 				return 0;
 
-			auto ctx{ open_device( file_t::any_access, 
-				mode_t::open_existing, attr_t::normal ) };
+			auto ctx{ open_device( file_t::any_access ) };
 			if ( !ctx || ctx == -1 )
 				return 0;
 			return close_device( ctx );
@@ -342,6 +561,11 @@ namespace nt {
 			const std::wstring registry,
 			const std::wstring_view path
 		) {
+			if ( flag != flag_t::mode_signed ) {
+				std::wcerr << "--+ expected signed mode" << std::endl;
+				return;
+			}
+
 			if ( registry.empty( ) || path.empty( ) ) {
 				std::wcerr << "--+ path or registry was empty" << std::endl;
 				return;
@@ -361,20 +585,26 @@ namespace nt {
 
 			if ( !load_signed( m_registry ) ) {
 				std::wcerr << "--+ failed to map signed driver" << std::endl;
+				return;
 			}
 		}
 
 		~driver_t( ) {
-			if ( is_mapped( ) && !m_registry.empty( ) ) {
-				if ( !unload_signed( m_registry ) )
-					std::wcerr << "--+ failed to unload mapped driver" << std::endl;
-			} else {
-				std::wcerr << "--+ unmapped driver or bad registry" << std::endl;
+			if ( !is_mapped( ) ) {
+				std::wcerr << "--+ not unloading unmapped driver" << std::endl;
 				return;
 			}
-			if ( !is_valid( ) )
-				std::wcerr << "--+ invalid path or registry" << std::endl;
-			m_path.clear( ), m_registry.clear( );
+
+			auto images{ fetch_kernel_modules( ) };
+			if ( images.empty( ) ) {
+				std::wcerr << "--+ improper unload" << std::endl;
+				return;
+			}
+
+			if ( !unload_signed( m_registry ) ) {
+				std::wcerr << "--+ failed to unload mapped driver" << std::endl;
+				return;
+			}
 		}
 	private:
 		std::wstring m_path, m_registry;

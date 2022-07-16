@@ -51,41 +51,41 @@ namespace nt {
 			return 0;
 
 		using call_t = std::int32_t( __stdcall* )( std::ptrdiff_t, std::int32_t, const type_t*, 
-			std::int32_t, std::ptrdiff_t, std::int32_t, std::ptrdiff_t, std::int32_t );
+			std::int32_t, std::ptrdiff_t, std::int32_t, std::ptrdiff_t, std::ptrdiff_t );
 		return !!ptr< call_t >( &DeviceIoControl )( device, 0x80862007, buffer, sizeof( type_t ), 0, 0, 0, 0 );
 	}
 
+	template< typename type_t = std::ptrdiff_t >
 	[[ nodiscard ]]
-	const std::ptrdiff_t mem_alloc(
-		const std::ptrdiff_t address,
+	const type_t mem_alloc(
+		const auto address,
 		const std::size_t size,
-		const std::int32_t type,
-		const std::int32_t protect
+		const std::int32_t type = mem_flag_t::commit | mem_flag_t::reserve,
+		const std::int32_t protect = page_prot_t::read_write
 	) {
 		if ( !size || !type || !protect )
 			return 0;
 
-		using call_t = std::ptrdiff_t( __stdcall* )( std::ptrdiff_t,
-			std::size_t, std::int32_t, std::int32_t );
-		return ptr< call_t >( &VirtualAlloc )( address, size, type, protect );
+		using call_t = type_t( __stdcall* )( std::ptrdiff_t, std::size_t, std::int32_t, std::int32_t );
+		return ptr< call_t >( &VirtualAlloc )( ptr< >( address ), size, type, protect );
 	}
 
+	template< typename type_t = std::ptrdiff_t >
 	const std::uint8_t mem_free(
-		const std::ptrdiff_t address,
+		const type_t address,
 		const std::size_t size,
-		const std::int32_t type
+		const std::int32_t type = mem_flag_t::release
 	) {
 		if ( !address || !type )
 			return 0;
 
 		using call_t = std::int32_t( __stdcall* )( std::ptrdiff_t, std::size_t, std::int32_t );
-		return !!ptr< call_t >( &VirtualFree )( address, size, type );
+		return !!ptr< call_t >( &VirtualFree )( ptr< >( address ), size, type );
 	}
 
 	[[ nodiscard ]]
-	const std::map< std::wstring, std::ptrdiff_t >fetch_kernel_modules( ) {
-		auto pool = mem_alloc( 0, 0xffffff, mem_flag_t::commit
-			| mem_flag_t::reserve, page_prot_t::execute_read_write );
+	const std::map< std::wstring, std::pair< std::ptrdiff_t, std::size_t > >fetch_kernel_modules( ) {
+		auto pool = mem_alloc( 0, 0xffffff );
 		if ( !pool )
 			return { };
 
@@ -104,17 +104,17 @@ namespace nt {
 		};
 
 		if ( !sys_info( info_type_t::module_info, pool, 0xffffff ) ) {
-			mem_free( pool, 0xffffff, mem_flag_t::release );
+			mem_free( pool, 0xffffff );
 			return { };
 		}
 
 		auto images = ptr< rtl_header_t* >( pool );
 		if ( !images ) {
-			mem_free( pool, 0xffffff, mem_flag_t::release );
+			mem_free( pool, 0xffffff );
 			return { };
 		}
 
-		std::map< std::wstring, std::ptrdiff_t >map{ };
+		std::map< std::wstring, std::pair< std::ptrdiff_t, std::size_t > >map{ };
 
 		for ( std::size_t i{ }; i < images->m_length; i++ ) {
 			const auto ctx{ images->m_mods[ i ] };
@@ -124,24 +124,12 @@ namespace nt {
 			std::string name{ ctx.m_name + ctx.m_name_offset };
 			if ( name.empty( ) )
 				continue;
-			map.emplace( std::wstring{ name.begin( ), name.end( ) - 4 }, ctx.m_ptr );
+
+			map.emplace( std::wstring{ name.begin( ), name.end( ) }, 
+				std::make_pair( ctx.m_ptr, ctx.m_size ) );
 		}
 
-		mem_free( pool, 0xffffff, mem_flag_t::release );
+		mem_free( pool, 0xffffff );
 		return map;
 	}
-
-	[[ nodiscard ]]
-	const std::map< std::wstring, std::ptrdiff_t >fetch_module_exports(
-		const std::wstring_view module
-	) {
-		auto images{ fetch_kernel_modules( ) };
-		if ( images.empty( ) )
-			return { };
-
-
-	}
-
-	// GetKernelModuleExport
-	// WriteToReadOnlyMemory
 }
