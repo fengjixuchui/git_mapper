@@ -29,13 +29,14 @@ std::int32_t main( ) {
 	for ( auto& [ key, val ] : images ) {
 		if ( key.find( L".dll" ) != std::wstring::npos )
 			continue;
+
 		if ( val.first <= images[L"ntoskrnl.exe"].first )
 			continue;
-		for ( std::ptrdiff_t ctx = val.first; ctx < val.first + val.second; ctx += 0x1000 ) {
-			std::wcout << "\t* 0x" << std::hex << ctx << std::endl;
-		}
 
-		std::wcout << "* " << key << std::endl;
+		for ( auto ctx{ val.first }; ctx < val.first + val.second; ctx += 0x1000 )
+			std::wcout << "\t* 0x" << std::hex << ctx << std::endl;
+
+		std::wcout << "\n* " << key << std::endl;
 	}
 
 	std::wcout << "--+ is_mapped:\t" << std::boolalpha << ptr< bool >( driver.is_mapped( ) ) << std::endl;

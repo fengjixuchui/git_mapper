@@ -290,9 +290,8 @@ namespace nt {
 			if ( !io_ctl< phys_mem_t >( ctx, &call ) || !close_device( ctx ) )
 				return 0;
 
-			return call.m_dst;
+			return call.m_dst;	
 		}
-
 public:
 		template< typename type_t >
 		[[ nodiscard ]]
