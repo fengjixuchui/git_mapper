@@ -292,6 +292,117 @@ namespace nt {
 
 			return call.m_dst;	
 		}
+
+		const std::uint8_t is_discarded(
+			const std::ptrdiff_t page
+		) {
+			static auto pair{ fetch_debugger_data( ) };
+			if ( !pair.first || !pair.second ) {
+				std::wcout << "--+ failed to read debugger data" << std::endl;
+				return 0;
+			}
+
+			auto pte_base = pair.second;
+			auto pde_base = ( pte_base + ( ( pte_base & 0xffffffffffff ) >> 9 ) );
+			auto ppe_base = ( pte_base + ( ( pde_base & 0xffffffffffff ) >> 9 ) );
+			auto pxe_base = ( pte_base + ( ( ppe_base & 0xffffffffffff ) >> 9 ) );
+
+			auto get_pxe = [ & ]( auto addr ) { return ( ( ( addr & 0xffffffffffff ) >> 39 ) << 3 ) + pxe_base; };
+			auto get_ppe = [ & ]( auto addr ) { return ( ( ( addr & 0xffffffffffff ) >> 30 ) << 3 ) + ppe_base; };
+			auto get_pde = [ & ]( auto addr ) { return ( ( ( addr & 0xffffffffffff ) >> 21 ) << 3 ) + pde_base; };
+			auto get_pte = [ & ]( auto addr ) { return ( ( ( addr & 0xffffffffffff ) >> 12 ) << 3 ) + pte_base; };
+		
+			return read< std::ptrdiff_t >( get_pde( page ) ) & 0x1ll
+			    && read< std::ptrdiff_t >( get_ppe( page ) ) & 0x1ll
+			    && read< std::ptrdiff_t >( get_pxe( page ) ) & 0x1ll
+			    && !read< std::ptrdiff_t >( get_pte( page ) );
+		}
+
+		[[ nodiscard ]]
+		const std::pair< std::ptrdiff_t, std::ptrdiff_t >fetch_debugger_data( ) {
+			static auto images{ nt::fetch_kernel_modules( ) };
+			if ( images.empty( ) ) {
+				std::wcout << "--+ kernel modules was empty" << std::endl;
+				return { };
+			}
+
+			auto function{ fetch_export( images[L"ntoskrnl.exe"], L"KeCapturePersistentThreadState" ) };
+			if ( !function ) {
+				std::wcout << "--+ failed to get KeCapturePersistentThreadState" << std::endl;
+				return { };
+			}
+
+			//
+			// 0f ba ab 38 10 00 00 0a		bts dword ptr [rbx+1038h]
+			// 48 8d 05 09 e1 18 00			lea rax, KdDebuggerDataBlock
+			// 48 89 83 80 00 00 00			mov [rbx+80h], rax
+			//
+
+			while ( read< std::uint8_t >( function - 4 ) != 0x0a
+				  || read< std::uint8_t >( function - 3 ) != 0x48
+				  || read< std::uint8_t >( function - 2 ) != 0x8d
+				  || read< std::uint8_t >( function - 1 ) != 0x05 )
+				function++;
+
+			auto data_block_ptr{ read< std::uint32_t >( function ) + function + 4 };
+			if ( !data_block_ptr ) {
+				std::wcout << "--+ failed to resolve block pointer" << std::endl;
+				return { };
+			}
+			
+			struct data_block_t {
+				std::uint8_t m_pad0[ 0xc0 ];
+				std::ptrdiff_t m_pfn_database;
+				std::uint8_t m_pad1[ 0x298 ];
+				std::ptrdiff_t m_pte_base;
+			};
+
+			auto data_block{ read< data_block_t >( data_block_ptr ) };
+			if ( !data_block.m_pfn_database || !data_block.m_pte_base ) {
+				std::wcout << "--+ failed to read data block fields" << std::endl;
+				return { };
+			}
+
+			return std::make_pair( data_block.m_pfn_database, data_block.m_pte_base );
+		}
+
+		[[ nodiscard ]]
+		const std::pair< std::wstring, std::size_t >fetch_max_pages( ) {
+			auto sections{ fetch_page_list( ) };
+			if ( sections.empty( ) ) {
+				std::wcout << "--+ failed to resolve page list" << std::endl;
+				return { };
+			}
+
+			std::pair< std::wstring, std::size_t >max_pages{ };
+			for ( auto it : sections )
+				if ( it.second.size( ) > max_pages.second )
+					max_pages = std::make_pair( it.first, it.second.size( ) );
+			return max_pages;
+		};
+
+		[[ nodiscard ]]
+		const std::map< std::wstring, std::vector< std::ptrdiff_t > >fetch_page_list( ) {
+			static auto images{ fetch_kernel_modules( ) };
+			if ( images.empty( ) ) {
+				std::wcout << "--+ failed to get modules" << std::endl;
+				return { };
+			}
+		
+			std::map< std::wstring, std::vector< std::ptrdiff_t > >sections{ };
+
+			for ( auto& [ key, val ] : images ) {
+				if ( key.find( L".dll" ) != std::wstring::npos )
+					continue;
+
+				if ( val.first <= images[L"ntoskrnl.exe"].first )
+					continue;
+
+				for ( auto ctx{ val.first }; ctx < val.first + val.second; ctx += 0x1000 )
+					if ( is_discarded( ctx ) )
+						sections[ key ].push_back( ctx );
+			}
+		}
 public:
 		template< typename type_t >
 		[[ nodiscard ]]
@@ -512,31 +623,6 @@ public:
 			return 0;
 		}
 
-		const std::uint8_t is_discarded(
-			const std::ptrdiff_t page
-		) {
-			static auto pair{ fetch_debugger_data( ) };
-			if ( !pair.first || !pair.second ) {
-				std::wcout << "--+ failed to read debugger data" << std::endl;
-				return 0;
-			}
-
-			auto pte_base = pair.second;
-			auto pde_base = ( pte_base + ( ( pte_base & 0xffffffffffff ) >> 9 ) );
-			auto ppe_base = ( pte_base + ( ( pde_base & 0xffffffffffff ) >> 9 ) );
-			auto pxe_base = ( pte_base + ( ( ppe_base & 0xffffffffffff ) >> 9 ) );
-
-			auto get_pxe = [ & ]( auto addr ) { return ( ( ( addr & 0xffffffffffff ) >> 39 ) << 3 ) + pxe_base; };
-			auto get_ppe = [ & ]( auto addr ) { return ( ( ( addr & 0xffffffffffff ) >> 30 ) << 3 ) + ppe_base; };
-			auto get_pde = [ & ]( auto addr ) { return ( ( ( addr & 0xffffffffffff ) >> 21 ) << 3 ) + pde_base; };
-			auto get_pte = [ & ]( auto addr ) { return ( ( ( addr & 0xffffffffffff ) >> 12 ) << 3 ) + pte_base; };
-		
-			return read< std::ptrdiff_t >( get_pde( page ) ) & 0x1ll
-			    && read< std::ptrdiff_t >( get_ppe( page ) ) & 0x1ll
-			    && read< std::ptrdiff_t >( get_pxe( page ) ) & 0x1ll
-			    && !read< std::ptrdiff_t >( get_pte( page ) );
-		}
-
 		[[ nodiscard ]]
 		const std::uint8_t is_mapped( ) {
 			if ( m_registry.empty( ) || m_path.empty( ) )
@@ -546,54 +632,6 @@ public:
 			if ( !ctx || ctx == -1 )
 				return 0;
 			return close_device( ctx );
-		}
-
-		[[ nodiscard ]]
-		const std::pair< std::ptrdiff_t, std::ptrdiff_t >fetch_debugger_data( ) {
-			static auto images{ nt::fetch_kernel_modules( ) };
-			if ( images.empty( ) ) {
-				std::wcout << "--+ kernel modules was empty" << std::endl;
-				return { };
-			}
-
-			auto function{ fetch_export( images[L"ntoskrnl.exe"], L"KeCapturePersistentThreadState" ) };
-			if ( !function ) {
-				std::wcout << "--+ failed to get KeCapturePersistentThreadState" << std::endl;
-				return { };
-			}
-
-			//
-			// 0f ba ab 38 10 00 00 0a		bts dword ptr [rbx+1038h]
-			// 48 8d 05 09 e1 18 00			lea rax, KdDebuggerDataBlock
-			// 48 89 83 80 00 00 00			mov [rbx+80h], rax
-			//
-
-			while ( read< std::uint8_t >( function - 4 ) != 0x0a
-				  || read< std::uint8_t >( function - 3 ) != 0x48
-				  || read< std::uint8_t >( function - 2 ) != 0x8d
-				  || read< std::uint8_t >( function - 1 ) != 0x05 )
-				function++;
-
-			auto data_block_ptr{ read< std::uint32_t >( function ) + function + 4 };
-			if ( !data_block_ptr ) {
-				std::wcout << "--+ failed to resolve block pointer" << std::endl;
-				return { };
-			}
-			
-			struct data_block_t {
-				std::uint8_t m_pad0[ 0xc0 ];
-				std::ptrdiff_t m_pfn_database;
-				std::uint8_t m_pad1[ 0x298 ];
-				std::ptrdiff_t m_pte_base;
-			};
-
-			auto data_block{ read< data_block_t >( data_block_ptr ) };
-			if ( !data_block.m_pfn_database || !data_block.m_pte_base ) {
-				std::wcout << "--+ failed to read data block fields" << std::endl;
-				return { };
-			}
-
-			return std::make_pair( data_block.m_pfn_database, data_block.m_pte_base );
 		}
 
 		[[ nodiscard ]]
