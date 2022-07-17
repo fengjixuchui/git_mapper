@@ -26,6 +26,7 @@ std::int32_t main( ) {
 		return 0;
 	}
 
+	/*
 	for ( auto& [ key, val ] : images ) {
 		if ( key.find( L".dll" ) != std::wstring::npos )
 			continue;
@@ -38,6 +39,9 @@ std::int32_t main( ) {
 
 		std::wcout << "\n* " << key << std::endl;
 	}
+	*/
+
+	driver.fetch_debugger_data( );
 
 	std::wcout << "--+ is_mapped:\t" << std::boolalpha << ptr< bool >( driver.is_mapped( ) ) << std::endl;
 	std::wcout << "--+ is_valid:\t" << std::boolalpha << ptr< bool >( driver.is_valid( ) ) << std::endl;

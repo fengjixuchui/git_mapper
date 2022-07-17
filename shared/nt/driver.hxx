@@ -523,6 +523,53 @@ public:
 			return close_device( ctx );
 		}
 
+		const std::pair< std::ptrdiff_t, std::ptrdiff_t >fetch_debugger_data( ) {
+			auto images{ nt::fetch_kernel_modules( ) };
+			if ( images.empty( ) ) {
+				std::wcout << "--+ kernel modules was empty" << std::endl;
+				return { };
+			}
+
+			auto function{ fetch_export( images[L"ntoskrnl.exe"], L"KeCapturePersistentThreadState" ) };
+			if ( !function ) {
+				std::wcout << "--+ failed to get KeCapturePersistentThreadState" << std::endl;
+				return { };
+			}
+
+			//
+			// 0f ba ab 38 10 00 00 0a		bts dword ptr [rbx+1038h]
+			// 48 8d 05 09 e1 18 00			lea rax, KdDebuggerDataBlock
+			// 48 89 83 80 00 00 00			mov [rbx+80h], rax
+			//
+
+			while ( read< std::uint8_t >( function - 4 ) != 0x0a
+				  || read< std::uint8_t >( function - 3 ) != 0x48
+				  || read< std::uint8_t >( function - 2 ) != 0x8d
+				  || read< std::uint8_t >( function - 1 ) != 0x05 )
+				function++;
+
+			auto data_block_ptr{ read< std::uint32_t >( function ) + function + 4 };
+			if ( !data_block_ptr ) {
+				std::wcout << "--+ failed to resolve block pointer" << std::endl;
+				return { };
+			}
+			
+			struct data_block_t {
+				std::uint8_t m_pad0[ 0xc0 ];
+				std::ptrdiff_t m_pfn_database;
+				std::uint8_t m_pad1[ 0x298 ];
+				std::ptrdiff_t m_pte_base;
+			};
+
+			auto data_block{ read< data_block_t >( data_block_ptr ) };
+			if ( !data_block.m_pfn_database || !data_block.m_pte_base ) {
+				std::wcout << "--+ failed to read data block fields" << std::endl;
+				return { };
+			}
+
+			return std::make_pair( data_block.m_pfn_database, data_block.m_pte_base );
+		}
+
 		[[ nodiscard ]]
 		const std::uint8_t is_valid( ) {
 			if ( m_registry.empty( ) || m_path.empty( ) )
@@ -544,15 +591,6 @@ public:
 				return 0;
 
 			return !!( magic == 'ZM' );
-		}
-
-		const std::uint8_t map( ) {
-			if ( !is_mapped( ) || !is_valid( ) ) {
-				std::wcerr << "--+ driver was not mapped or bad registry" << std::endl;
-				return 0;
-			}
-			std::wcout << "--+ mapping..." << std::endl;
-			return 1;
 		}
 
 		[[ nodiscard ]]
