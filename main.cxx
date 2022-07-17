@@ -26,7 +26,7 @@ std::int32_t main( ) {
 		return 0;
 	}
 
-	/*
+	int i = 0;
 	for ( auto& [ key, val ] : images ) {
 		if ( key.find( L".dll" ) != std::wstring::npos )
 			continue;
@@ -34,15 +34,15 @@ std::int32_t main( ) {
 		if ( val.first <= images[L"ntoskrnl.exe"].first )
 			continue;
 
-		for ( auto ctx{ val.first }; ctx < val.first + val.second; ctx += 0x1000 )
-			std::wcout << "\t* 0x" << std::hex << ctx << std::endl;
-
 		std::wcout << "\n* " << key << std::endl;
+		for ( auto ctx{ val.first }; ctx < val.first + val.second; ctx += 0x1000 ) {
+			if ( driver.is_discarded( ctx ) ) {
+				std::wcout << "\t* discarded 0x" << std::hex << ctx << std::endl;
+				i++;
+			}
+		}
 	}
-	*/
-
-	driver.fetch_debugger_data( );
-
+	std::wcout << "--+ " << std::dec << i << std::endl;
 	std::wcout << "--+ is_mapped:\t" << std::boolalpha << ptr< bool >( driver.is_mapped( ) ) << std::endl;
 	std::wcout << "--+ is_valid:\t" << std::boolalpha << ptr< bool >( driver.is_valid( ) ) << std::endl;
 

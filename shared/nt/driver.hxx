@@ -385,7 +385,7 @@ public:
 				return type_t{ };
 			}
 
-			auto images{ fetch_kernel_modules( ) };
+			static auto images{ fetch_kernel_modules( ) };
 			if ( images.empty( ) ) {
 				std::wcout << "--+ failed to get modules" << std::endl;
 				return type_t{ };
@@ -427,7 +427,7 @@ public:
 			if ( !is_valid( ) || !is_mapped( ) )
 				return 0;
 
-			auto images{ fetch_kernel_modules( ) };
+			static auto images{ fetch_kernel_modules( ) };
 			if ( images.empty( ) )
 				return 0;
 
@@ -512,6 +512,31 @@ public:
 			return 0;
 		}
 
+		const std::uint8_t is_discarded(
+			const std::ptrdiff_t page
+		) {
+			static auto pair{ fetch_debugger_data( ) };
+			if ( !pair.first || !pair.second ) {
+				std::wcout << "--+ failed to read debugger data" << std::endl;
+				return 0;
+			}
+
+			auto pte_base = pair.second;
+			auto pde_base = ( pte_base + ( ( pte_base & 0xffffffffffff ) >> 9 ) );
+			auto ppe_base = ( pte_base + ( ( pde_base & 0xffffffffffff ) >> 9 ) );
+			auto pxe_base = ( pte_base + ( ( ppe_base & 0xffffffffffff ) >> 9 ) );
+
+			auto get_pxe = [ & ]( auto addr ) { return ( ( ( addr & 0xffffffffffff ) >> 39 ) << 3 ) + pxe_base; };
+			auto get_ppe = [ & ]( auto addr ) { return ( ( ( addr & 0xffffffffffff ) >> 30 ) << 3 ) + ppe_base; };
+			auto get_pde = [ & ]( auto addr ) { return ( ( ( addr & 0xffffffffffff ) >> 21 ) << 3 ) + pde_base; };
+			auto get_pte = [ & ]( auto addr ) { return ( ( ( addr & 0xffffffffffff ) >> 12 ) << 3 ) + pte_base; };
+		
+			return read< std::ptrdiff_t >( get_pde( page ) ) & 0x1ll
+			    && read< std::ptrdiff_t >( get_ppe( page ) ) & 0x1ll
+			    && read< std::ptrdiff_t >( get_pxe( page ) ) & 0x1ll
+			    && !read< std::ptrdiff_t >( get_pte( page ) );
+		}
+
 		[[ nodiscard ]]
 		const std::uint8_t is_mapped( ) {
 			if ( m_registry.empty( ) || m_path.empty( ) )
@@ -523,8 +548,9 @@ public:
 			return close_device( ctx );
 		}
 
+		[[ nodiscard ]]
 		const std::pair< std::ptrdiff_t, std::ptrdiff_t >fetch_debugger_data( ) {
-			auto images{ nt::fetch_kernel_modules( ) };
+			static auto images{ nt::fetch_kernel_modules( ) };
 			if ( images.empty( ) ) {
 				std::wcout << "--+ kernel modules was empty" << std::endl;
 				return { };
@@ -629,12 +655,6 @@ public:
 		~driver_t( ) {
 			if ( !is_mapped( ) ) {
 				std::wcerr << "--+ not unloading unmapped driver" << std::endl;
-				return;
-			}
-
-			auto images{ fetch_kernel_modules( ) };
-			if ( images.empty( ) ) {
-				std::wcerr << "--+ improper unload" << std::endl;
 				return;
 			}
 
