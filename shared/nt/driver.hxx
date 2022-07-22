@@ -344,122 +344,127 @@ namespace nt {
          };
 			*/
 
-			std::wprintf( L"1. %llx\n", read< std::ptrdiff_t >( cr3 + 8 * page[ dir_ptr ] ) );
-
-			return is_bad_pte( address );
+			return 0;
 		}
 
-		const std::uint8_t is_bad_pte(
-			const std::ptrdiff_t page
-		) {
-			static auto pair{ fetch_debugger_data( ) };
-			if ( !pair.first || !pair.second ) {
-				std::wcout << "--+ failed to read debugger data" << std::endl;
-				return 0;
-			}
-
-			auto pte_base = pair.second;
-			auto pde_base = ( pte_base + ( ( pte_base & 0xffffffffffff ) >> 9 ) );
-			auto ppe_base = ( pte_base + ( ( pde_base & 0xffffffffffff ) >> 9 ) );
-			auto pxe_base = ( pte_base + ( ( ppe_base & 0xffffffffffff ) >> 9 ) );
-
-			auto get_pxe = [ & ]( auto addr ) { return ( ( ( addr & 0xffffffffffff ) >> 39 ) << 3 ) + pxe_base; };
-			auto get_ppe = [ & ]( auto addr ) { return ( ( ( addr & 0xffffffffffff ) >> 30 ) << 3 ) + ppe_base; };
-			auto get_pde = [ & ]( auto addr ) { return ( ( ( addr & 0xffffffffffff ) >> 21 ) << 3 ) + pde_base; };
-			auto get_pte = [ & ]( auto addr ) { return ( ( ( addr & 0xffffffffffff ) >> 12 ) << 3 ) + pte_base; };
-		
-			return read< std::ptrdiff_t >( get_pde( page ) ) & 0x1ll
-			    && read< std::ptrdiff_t >( get_ppe( page ) ) & 0x1ll
-			    && read< std::ptrdiff_t >( get_pxe( page ) ) & 0x1ll
-			    && !read< std::ptrdiff_t >( get_pte( page ) );
-		}
-
-		[[ nodiscard ]]
-		const std::pair< std::ptrdiff_t, std::ptrdiff_t >fetch_debugger_data( ) {
+		const std::ptrdiff_t fetch_pfn_database( ) {
 			static auto images{ nt::fetch_kernel_modules( ) };
 			if ( images.empty( ) ) {
 				std::wcout << "--+ kernel modules was empty" << std::endl;
-				return { };
+				return 0;
 			}
 
-			static auto function{ fetch_export( images[ L"ntoskrnl.exe" ], L"KeCapturePersistentThreadState" ) };
-			if ( !function ) {
+			static auto thread_state{ fetch_export( images[ L"ntoskrnl.exe" ], L"KeCapturePersistentThreadState" ) };
+			if ( !thread_state ) {
 				std::wcout << "--+ failed to get KeCapturePersistentThreadState" << std::endl;
-				return { };
+				return 0;
 			}
 
 			//
-			// 0f ba ab 38 10 00 00 0a		bts dword ptr [ rbx + 1038h ]
-			// 48 8d 05 09 e1 18 00			lea rax, KdDebuggerDataBlock
-			// 48 89 83 80 00 00 00			mov [ rbx + 80h ], rax
+			// b9 ff ff 00 00				mov ecx, 0ffffh
+			// 48 8b 05 80 c1 2d 00		mov rax, cs:MmPfnDatabase
+			// 48 89 43 18					mov [ rbx + 18h ], rax
 			//
 
-			while ( read< std::uint8_t >( function - 4 ) != 0x0a
-				  || read< std::uint8_t >( function - 3 ) != 0x48
-				  || read< std::uint8_t >( function - 2 ) != 0x8d
-				  || read< std::uint8_t >( function - 1 ) != 0x05 )
-				function++;
+			while ( read< std::uint8_t >( thread_state - 5 ) != 0x00
+				  || read< std::uint8_t >( thread_state - 4 ) != 0x00
+				  || read< std::uint8_t >( thread_state - 3 ) != 0x48
+				  || read< std::uint8_t >( thread_state - 2 ) != 0x8b
+				  || read< std::uint8_t >( thread_state - 1 ) != 0x05 )
+				thread_state++;
 
-			auto data_block_ptr{ read< std::uint32_t >( function ) + function + 4 };
-			if ( !data_block_ptr ) {
-				std::wcout << "--+ failed to resolve block pointer" << std::endl;
-				return { };
-			}
-			
-			struct data_block_t {
-				std::uint8_t m_pad0[ 0xc0 ];
-				std::ptrdiff_t m_pfn_database;
-				std::uint8_t m_pad1[ 0x298 ];
-				std::ptrdiff_t m_pte_base;
-			};
-
-			auto data_block{ read< data_block_t >( data_block_ptr ) };
-			if ( !data_block.m_pfn_database || !data_block.m_pte_base ) {
-				std::wcout << "--+ failed to read data block fields" << std::endl;
-				return { };
+			static auto pfn_database_ptr{ read< std::int32_t >( thread_state ) + thread_state + 4 };
+			if ( !pfn_database_ptr ) {
+				std::wcout << "--+ failed to resolve pfn database pointer" << std::endl;
+				return 0;
 			}
 
-			return std::make_pair( data_block.m_pfn_database, data_block.m_pte_base );
+			static auto pfn_database{ read< std::ptrdiff_t >( pfn_database_ptr ) };
+			if ( !pfn_database ) {
+				std::wcout << "--+ failed to read pfn database pointer" << std::endl;
+				return 0;
+			}
+
+			return pfn_database;
 		}
 
-		[[ nodiscard ]]
-		const std::pair< std::ptrdiff_t, std::size_t >fetch_max_pages( ) {
-			auto sections{ fetch_page_list( ) };
-			if ( sections.empty( ) ) {
-				std::wcout << "--+ failed to resolve page list" << std::endl;
-				return { };
-			}
-
-			std::pair< std::ptrdiff_t, std::size_t >max_pages{ };
-			for ( auto it : sections )
-				if ( it.second.size( ) > max_pages.second )
-					max_pages = std::make_pair( it.second.front( ), it.second.size( ) * 0x1000 );
-			return max_pages;
-		};
-
-		[[ nodiscard ]]
-		const std::map< std::wstring, std::vector< std::ptrdiff_t > >fetch_page_list( ) {
-			static auto images{ fetch_kernel_modules( ) };
+		const std::ptrdiff_t fetch_pte_base( ) {
+			static auto images{ nt::fetch_kernel_modules( ) };
 			if ( images.empty( ) ) {
-				std::wcout << "--+ failed to get modules" << std::endl;
-				return { };
-			}
-		
-			std::map< std::wstring, std::vector< std::ptrdiff_t > >sections{ };
-
-			for ( auto& [ key, val ] : images ) {
-				if ( key.find( L".dll" ) != std::wstring::npos )
-					continue;
-
-				if ( val.first <= images[ L"ntoskrnl.exe" ].first )
-					continue;
-
-				for ( auto ctx{ val.first }; ctx < val.first + val.second; ctx += 0x1000 )
-					if ( is_discarded( ctx ) )
-						sections[ key ].push_back( ctx );
+				std::wcout << "--+ kernel modules was empty" << std::endl;
+				return 0;
 			}
 
-			return sections;
+			static auto bug_check_ex{ fetch_export( images[ L"ntoskrnl.exe" ], L"KeBugCheckEx" ) };
+			if ( !bug_check_ex ) {
+				std::wcout << "--+ failed to get KeBugCheckEx" << std::endl;
+				return 0;
+			}
+
+			//
+			// 45 33 c0				xor r8d, r8d
+			// 33 d2					xor edx, edx
+			// e8 82 6e 0e 00		call KeBugCheck2
+			//
+
+			while ( read< std::uint8_t >( bug_check_ex - 5 ) != 0x33
+				  || read< std::uint8_t >( bug_check_ex - 4 ) != 0xc0
+				  || read< std::uint8_t >( bug_check_ex - 3 ) != 0x33
+				  || read< std::uint8_t >( bug_check_ex - 2 ) != 0xd2
+				  || read< std::uint8_t >( bug_check_ex - 1 ) != 0xe8 )
+				bug_check_ex++;
+
+			static auto bug_check{ read< std::int32_t >( bug_check_ex ) + bug_check_ex + 4 };
+			if ( !bug_check ) {
+				std::wcout << "--+ failed to resolve KeBugCheck2" << std::endl;
+				return 0;
+			}
+
+			//
+			// 48 8b 15 53 65 1a 00		mov rdx, cs:qword_fffff8041364f270
+			// 48 8b 0d 44 65 1a 00		mov rcx, cs:qword_fffff8041364f268
+			// e8 f3 f8 ef ff				call KiMarkBugCheckRegions
+			//
+
+			while ( read< std::uint8_t >( bug_check - 5 ) != 0x44
+				  || read< std::uint8_t >( bug_check - 4 ) != 0x65
+				  || read< std::uint8_t >( bug_check - 3 ) != 0x1a
+				  || read< std::uint8_t >( bug_check - 2 ) != 0x00
+				  || read< std::uint8_t >( bug_check - 1 ) != 0xe8 )
+				bug_check++;
+
+			static auto mark_regions{ read< std::int32_t >( bug_check ) + bug_check + 4 };
+			if ( !mark_regions ) {
+				std::wcout << "--+ failed to resolve KiMarkBugCheckRegions" << std::endl;
+				return 0;
+			}
+
+			//
+			// 84 c0							test al, al
+			// 0f 84 98 00 00 00			jz loc_fffff804133a8774
+			// 48 8b 05 a5 ac 3c 00		mov rax, cs:MmPteBase
+			//
+
+			while ( read< std::uint8_t >( mark_regions - 5 ) != 0x00
+				  || read< std::uint8_t >( mark_regions - 4 ) != 0x00
+				  || read< std::uint8_t >( mark_regions - 3 ) != 0x48
+				  || read< std::uint8_t >( mark_regions - 2 ) != 0x8b
+				  || read< std::uint8_t >( mark_regions - 1 ) != 0x05 )
+				mark_regions++;
+
+			static auto pte_base_ptr{ read< std::uint32_t >( mark_regions ) + mark_regions + 4 };
+			if ( !pte_base_ptr ) {
+				std::wcout << "--+ failed to resolve pte base pointer" << std::endl;
+				return 0;
+			}
+
+			static auto pte_base{ read< std::ptrdiff_t >( pte_base_ptr ) };
+			if ( !pte_base ) {
+				std::wcout << "--+ failed to read pte base" << std::endl;
+				return 0;
+			}
+
+			return pte_base;
 		}
 public:
 		template< typename type_t >
@@ -762,13 +767,9 @@ public:
 				return 0;
 			}
 
-			auto max_pages{ fetch_max_pages( ) };
-			if ( !max_pages.first || !max_pages.second ) {
-				std::wcout << "--+ failed to get max pages" << std::endl;
-				return 0;
-			}
+			std::wcout << "--+ got pfn_database 0x" << std::hex << fetch_pfn_database( ) << std::endl;
+			std::wcout << "--+ got pte_base 0x" << std::hex << fetch_pte_base( ) << std::endl;
 
-			std::wprintf( L"%llx, %llx\n", max_pages.first, max_pages.second );
 			return 1;
 		}
 
