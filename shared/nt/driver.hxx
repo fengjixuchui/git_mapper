@@ -313,37 +313,33 @@ namespace nt {
 		}
 
 		const std::uint8_t is_discarded(
-			const std::ptrdiff_t address
+			const std::ptrdiff_t addr
 		) {
-         const std::ptrdiff_t page[ ] = {
-            ( address << 0x10 ) >> 0x37,
-            ( address << 0x19 ) >> 0x37,
-            ( address << 0x22 ) >> 0x37,
-            ( address << 0x2b ) >> 0x37,
-            ( address << 0x34 ) >> 0x34
+			enum id_t : std::uint8_t {
+            pte_base,
+				pde_base,
+				ppe_base,
+				pxe_base
          };
+			
+			const std::ptrdiff_t page[ ] = {
+				fetch_pte_base( ),
+				page[ pte_base ] + ( ( page[ pte_base ] & 0xffffffffffff ) >> 9 ),
+				page[ pte_base ] + ( ( page[ pde_base ] & 0xffffffffffff ) >> 9 ),
+				page[ pte_base ] + ( ( page[ ppe_base ] & 0xffffffffffff ) >> 9 )
+			};
 
-         enum id_t : std::uint8_t { 
-            dir_ptr, // page directory pointer
-            dir,     // page directory
-            tab_ptr, // page table
-            tab,     // page table entry
-            ofs      // page offset
-         };
+			auto pte_ptr{ ( ( ( addr & 0xffffffffffff ) >> 12 ) << 3 ) + page[ pte_base ] };
+			auto pde_ptr{ ( ( ( addr & 0xffffffffffff ) >> 21 ) << 3 ) + page[ pde_base ] };
+			auto ppe_ptr{ ( ( ( addr & 0xffffffffffff ) >> 30 ) << 3 ) + page[ ppe_base ] };
+			auto pxe_ptr{ ( ( ( addr & 0xffffffffffff ) >> 39 ) << 3 ) + page[ pxe_base ] };
 
-         auto cr3{ get_kernel_cr3( ) & 0xfffffffffffffff0 };
-         if ( !cr3 )
-            return 0;
+			if ( !read< std::ptrdiff_t >( pde_ptr ) & 0x1ll
+			  || !read< std::ptrdiff_t >( ppe_ptr ) & 0x1ll
+			  || !read< std::ptrdiff_t >( pxe_ptr ) & 0x1ll )
+				return 0;
 
-         const std::ptrdiff_t data[ ] = {
-            read< std::ptrdiff_t >( cr3 + 8 * page[ dir_ptr ] ),
-            read< std::ptrdiff_t >( ( data[ 0 ] & 0xffffff000 ) + 8 * page[ dir ] ),
-            read< std::ptrdiff_t >( ( data[ 1 ] & 0xffffff000 ) + 8 * page[ tab_ptr ] ),
-            read< std::ptrdiff_t >( ( data[ 2 ] & 0xffffff000 ) + 8 * page[ tab ] )
-         };
-
-			for ( auto& it : data ) std::wcout << "--+ 0x" << it << std::endl;
-			return 0;
+			return read< std::ptrdiff_t >( pte_ptr ) == 0;
 		}
 
 		const std::ptrdiff_t fetch_pfn_database( ) {
@@ -720,6 +716,37 @@ public:
 		}
 
 		[[ nodiscard ]]
+		const std::pair< std::ptrdiff_t, std::size_t >fetch_max_discard( ) {
+			static auto images{ fetch_kernel_modules( ) };
+			if ( images.empty( ) ) {
+				std::wcout << "--+ failed to get modules" << std::endl;
+				return { };
+			}
+
+			std::map< std::wstring, std::vector< std::ptrdiff_t > >sections{ };
+
+			for ( auto& [ key, val ] : images ) {
+				if ( key.find( L".dll" ) != std::wstring::npos )
+					continue;
+
+				if ( val.first <= images[ L"ntoskrnl.exe" ].first )
+					continue;
+
+				for ( auto ctx{ val.first }; ctx < val.first + val.second; ctx += 0x1000 )
+					if ( is_discarded( ctx ) )
+						sections[ key ].push_back( ctx );
+			}
+
+			std::pair< std::ptrdiff_t, std::size_t >max_discard{ };
+
+			for ( auto& [ key, val ] : sections )
+				if ( val.size( ) > max_discard.second )
+					max_discard = std::make_pair( val.front( ), val.size( ) );
+
+			return std::make_pair( max_discard.first, max_discard.second * 0x1000 );
+		};
+
+		[[ nodiscard ]]
 		const std::uint8_t map(
 			const std::filesystem::path path
 		) {
@@ -766,17 +793,10 @@ public:
 				return 0;
 			}
 
-			std::wcout << "--+ got pfn_database 0x" << std::hex << fetch_pfn_database( ) << std::endl;
-			std::wcout << "--+ got pte_base 0x" << std::hex << fetch_pte_base( ) << std::endl;
-
-			static auto images{ nt::fetch_kernel_modules( ) };
-			if ( images.empty( ) ) {
-				std::wcout << "--+ kernel modules was empty" << std::endl;
+			auto max_discard{ fetch_max_discard( ) };
+			if ( !max_discard.first || max_discard.second < driver_bytes.size( ) ) {
+				std::wcout << "--+ unable to find large enough discard list" << std::endl;
 				return 0;
-			}
-
-			for ( auto& it : images ) {
-				break;
 			}
 
 			return 1;

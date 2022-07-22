@@ -51,8 +51,6 @@ std::int32_t main(
 			std::wcout << "--+ failed to map driver" << std::endl;
 			break;
 		}
-
-		std::wcout << "--+ successfully mapped driver" << std::endl;
 	}
 #ifndef __debug
 	std::wcout.clear( wcout );
