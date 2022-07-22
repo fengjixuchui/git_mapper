@@ -293,7 +293,63 @@ namespace nt {
 			return call.m_dst;	
 		}
 
+		const std::ptrdiff_t get_kernel_cr3( ) {
+			static auto images{ nt::fetch_kernel_modules( ) };
+			if ( images.empty( ) ) {
+				std::wcout << "--+ kernel modules was empty" << std::endl;
+				return 0;
+			}
+
+			static auto system{ fetch_export( images[ L"ntoskrnl.exe" ], L"PsInitialSystemProcess" ) };
+			if ( !system ) {
+				std::wcout << "--+ failed to resolve PsInitialSystemProcess" << std::endl;
+				return 0;
+			}
+
+			auto dir_base{ read< std::ptrdiff_t >( system + 0x28 ) };
+         auto usr_base{ read< std::ptrdiff_t >( system + 0x280 ) };
+
+         return dir_base ? dir_base : usr_base;
+		}
+
 		const std::uint8_t is_discarded(
+			const std::ptrdiff_t address
+		) {
+         const std::ptrdiff_t page[ ] = {
+            ( address << 0x10 ) >> 0x37,
+            ( address << 0x19 ) >> 0x37,
+            ( address << 0x22 ) >> 0x37,
+            ( address << 0x2b ) >> 0x37,
+            ( address << 0x34 ) >> 0x34
+         };
+
+         enum id_t : std::uint8_t { 
+            dir_ptr, // page directory pointer
+            dir,     // page directory
+            tab_ptr, // page table
+            tab,     // page table entry
+            ofs      // page offset
+         };
+
+         auto cr3{ get_kernel_cr3( ) & 0xfffffffffffffff0 };
+         if ( !cr3 )
+            return 0;
+
+			/*
+         const std::ptrdiff_t data[ ] = {
+            read< std::ptrdiff_t >( cr3 + 8 * page[ dir_ptr ] ),
+            read< std::ptrdiff_t >( ( data[ 0 ] & 0xffffff000 ) + 8 * page[ dir ] ),
+            read< std::ptrdiff_t >( ( data[ 1 ] & 0xffffff000 ) + 8 * page[ tab_ptr ] ),
+            read< std::ptrdiff_t >( ( data[ 2 ] & 0xffffff000 ) + 8 * page[ tab ] )
+         };
+			*/
+
+			std::wprintf( L"1. %llx\n", read< std::ptrdiff_t >( cr3 + 8 * page[ dir_ptr ] ) );
+
+			return is_bad_pte( address );
+		}
+
+		const std::uint8_t is_bad_pte(
 			const std::ptrdiff_t page
 		) {
 			static auto pair{ fetch_debugger_data( ) };
@@ -326,16 +382,16 @@ namespace nt {
 				return { };
 			}
 
-			auto function{ fetch_export( images[L"ntoskrnl.exe"], L"KeCapturePersistentThreadState" ) };
+			static auto function{ fetch_export( images[ L"ntoskrnl.exe" ], L"KeCapturePersistentThreadState" ) };
 			if ( !function ) {
 				std::wcout << "--+ failed to get KeCapturePersistentThreadState" << std::endl;
 				return { };
 			}
 
 			//
-			// 0f ba ab 38 10 00 00 0a		bts dword ptr [rbx+1038h]
+			// 0f ba ab 38 10 00 00 0a		bts dword ptr [ rbx + 1038h ]
 			// 48 8d 05 09 e1 18 00			lea rax, KdDebuggerDataBlock
-			// 48 89 83 80 00 00 00			mov [rbx+80h], rax
+			// 48 89 83 80 00 00 00			mov [ rbx + 80h ], rax
 			//
 
 			while ( read< std::uint8_t >( function - 4 ) != 0x0a
@@ -367,17 +423,17 @@ namespace nt {
 		}
 
 		[[ nodiscard ]]
-		const std::pair< std::wstring, std::size_t >fetch_max_pages( ) {
+		const std::pair< std::ptrdiff_t, std::size_t >fetch_max_pages( ) {
 			auto sections{ fetch_page_list( ) };
 			if ( sections.empty( ) ) {
 				std::wcout << "--+ failed to resolve page list" << std::endl;
 				return { };
 			}
 
-			std::pair< std::wstring, std::size_t >max_pages{ };
+			std::pair< std::ptrdiff_t, std::size_t >max_pages{ };
 			for ( auto it : sections )
 				if ( it.second.size( ) > max_pages.second )
-					max_pages = std::make_pair( it.first, it.second.size( ) );
+					max_pages = std::make_pair( it.second.front( ), it.second.size( ) * 0x1000 );
 			return max_pages;
 		};
 
@@ -395,13 +451,15 @@ namespace nt {
 				if ( key.find( L".dll" ) != std::wstring::npos )
 					continue;
 
-				if ( val.first <= images[L"ntoskrnl.exe"].first )
+				if ( val.first <= images[ L"ntoskrnl.exe" ].first )
 					continue;
 
 				for ( auto ctx{ val.first }; ctx < val.first + val.second; ctx += 0x1000 )
 					if ( is_discarded( ctx ) )
 						sections[ key ].push_back( ctx );
 			}
+
+			return sections;
 		}
 public:
 		template< typename type_t >
@@ -502,7 +560,7 @@ public:
 				return type_t{ };
 			}
 
-			auto kernel{ fetch_export( images[ L"ntoskrnl.exe" ], L"NtAddAtom" ) };
+			static auto kernel{ fetch_export( images[ L"ntoskrnl.exe" ], L"NtAddAtom" ) };
 			if ( !kernel ) {
 				std::wcout << "--+ failed to get kernel NtAddAtom" << std::endl;
 				return type_t{ };
@@ -544,29 +602,29 @@ public:
 
 			struct dos_header_t {
 				std::uint16_t m_magic;
-				std::int8_t m_pad0[58];
+				std::int8_t m_pad0[ 58 ];
 				std::uint32_t m_next;
 			};
 
 			struct nt_headers_t {
 				std::uint16_t m_magic;
-				std::int8_t m_pad0[132];
+				std::int8_t m_pad0[ 132 ];
 				std::int32_t m_address, m_size;
-				std::int8_t m_pad1[120];
+				std::int8_t m_pad1[ 120 ];
 			};
 
 			auto ctx{ open_device( file_t::read_access | file_t::write_access ) };
 			if ( !ctx || ctx == -1 )
 				return{ };
 
-			dos_header_t dos_header{ read< dos_header_t >( std::get< 0 >( module ) ) };
-			nt_headers_t nt_headers{ read< nt_headers_t >( std::get< 0 >( module ) + dos_header.m_next ) };
+			dos_header_t dos_header{ read< dos_header_t >( module.first ) };
+			nt_headers_t nt_headers{ read< nt_headers_t >( module.first + dos_header.m_next ) };
 
 			if ( dos_header.m_magic != 'ZM' || nt_headers.m_magic != 'EP' )
 				return 0;
 
 			struct export_dir_t {
-				std::int8_t m_pad0[24];
+				std::int8_t m_pad0[ 24 ];
 				std::int32_t m_count, m_fn_ptr;
 				std::int32_t m_tag_ptr, m_ord_ptr;
 			};
@@ -583,7 +641,7 @@ public:
 
 			copy_mem_t call{ 
 				.m_index = 0x33, 
-				.m_src = ptr< >( std::get< 0 >( module ) + nt_headers.m_address ), 
+				.m_src = ptr< >( module.first + nt_headers.m_address ), 
 				.m_dst = ptr< >( dir ),
 				.m_size = ptr< std::size_t >( nt_headers.m_size )
 			};
@@ -609,13 +667,13 @@ public:
 			}
 
 			for ( std::size_t i{ }; i < dir->m_count; i++ ) {
-				std::string name{ ptr< char* >( fn_tag[i] + rva ) };
+				std::string name{ ptr< char* >( fn_tag[ i ] + rva ) };
 				if ( name.empty( ) )
 					continue;
 
 				if ( function == std::wstring{ name.begin( ), name.end( ) } ) {
 					mem_free( dir, nt_headers.m_size );
-					return ptr< >( std::get< 0 >( module ) + fn_ptr[fn_ord[i]] );
+					return ptr< >( module.first + fn_ptr[ fn_ord[ i ] ] );
 				}
 			}
 
@@ -655,6 +713,63 @@ public:
 				return 0;
 
 			return !!( magic == 'ZM' );
+		}
+
+		[[ nodiscard ]]
+		const std::uint8_t map(
+			const std::filesystem::path path
+		) {
+			if ( !std::filesystem::exists( path ) ) {
+				std::wcout << "--+ file does not exist at path" << std::endl;
+				return 0;
+			}
+
+			auto ext{ std::filesystem::path{ path }.extension( ) };
+			if ( ext.empty( ) || ext != ".sys" ) {
+				std::wcout << "--+ file has invalid extension" << std::endl;
+				return 0;
+			}
+
+			std::ifstream file{ path, std::ios::in | std::ios::binary };
+			if ( !file.is_open( ) || !file.good( ) ) {
+				std::wcout << "--+ failed to open file stream" << std::endl;
+				return 0;
+			}
+
+			static std::vector< std::uint8_t >driver_bytes{
+				std::istreambuf_iterator< char >( file ),
+				std::istreambuf_iterator< char >( )
+			};
+
+			struct dos_header_t {
+				std::uint16_t m_magic;
+				std::int8_t m_pad0[ 58 ];
+				std::uint32_t m_next;
+			};
+
+			struct nt_headers_t {
+				std::uint16_t m_magic;
+				std::int8_t m_pad1[ 38 ];
+				std::uint32_t m_entry;
+				std::int8_t m_pad2[ 220 ];
+			};
+
+			auto dos_header{ ptr< dos_header_t* >( &driver_bytes.front( ) ) };
+			auto nt_headers{ ptr< nt_headers_t* >( &driver_bytes.front( ) + dos_header->m_next ) };
+
+			if ( dos_header->m_magic != 'ZM' || nt_headers->m_magic != 'EP' ) {
+				std::wcout << "--+ bad dos and nt header magic" << std::endl;
+				return 0;
+			}
+
+			auto max_pages{ fetch_max_pages( ) };
+			if ( !max_pages.first || !max_pages.second ) {
+				std::wcout << "--+ failed to get max pages" << std::endl;
+				return 0;
+			}
+
+			std::wprintf( L"%llx, %llx\n", max_pages.first, max_pages.second );
+			return 1;
 		}
 
 		[[ nodiscard ]]
