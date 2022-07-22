@@ -335,15 +335,14 @@ namespace nt {
          if ( !cr3 )
             return 0;
 
-			/*
          const std::ptrdiff_t data[ ] = {
             read< std::ptrdiff_t >( cr3 + 8 * page[ dir_ptr ] ),
             read< std::ptrdiff_t >( ( data[ 0 ] & 0xffffff000 ) + 8 * page[ dir ] ),
             read< std::ptrdiff_t >( ( data[ 1 ] & 0xffffff000 ) + 8 * page[ tab_ptr ] ),
             read< std::ptrdiff_t >( ( data[ 2 ] & 0xffffff000 ) + 8 * page[ tab ] )
          };
-			*/
 
+			for ( auto& it : data ) std::wcout << "--+ 0x" << it << std::endl;
 			return 0;
 		}
 
@@ -601,7 +600,7 @@ public:
 			if ( !is_valid( ) || !is_mapped( ) )
 				return 0;
 
-			static auto images{ fetch_kernel_modules( ) };
+			static auto images{ nt::fetch_kernel_modules( ) };
 			if ( images.empty( ) )
 				return 0;
 
@@ -620,7 +619,7 @@ public:
 
 			auto ctx{ open_device( file_t::read_access | file_t::write_access ) };
 			if ( !ctx || ctx == -1 )
-				return{ };
+				return 0;
 
 			dos_header_t dos_header{ read< dos_header_t >( module.first ) };
 			nt_headers_t nt_headers{ read< nt_headers_t >( module.first + dos_header.m_next ) };
@@ -769,6 +768,16 @@ public:
 
 			std::wcout << "--+ got pfn_database 0x" << std::hex << fetch_pfn_database( ) << std::endl;
 			std::wcout << "--+ got pte_base 0x" << std::hex << fetch_pte_base( ) << std::endl;
+
+			static auto images{ nt::fetch_kernel_modules( ) };
+			if ( images.empty( ) ) {
+				std::wcout << "--+ kernel modules was empty" << std::endl;
+				return 0;
+			}
+
+			for ( auto& it : images ) {
+				break;
+			}
 
 			return 1;
 		}

@@ -16,6 +16,11 @@
    };
 #endif
 
+#define __scope\
+   for ( auto cond = 0; cond < 2; cond += 1 )\
+      for ( ; cond < 2; cond += 2 )\
+         if ( cond == 0 )\
+
 #include "nt/utilities.hxx"
 #include "nt/registry.hxx"
 #include "nt/driver.hxx"
