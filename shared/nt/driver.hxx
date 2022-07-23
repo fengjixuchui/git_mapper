@@ -30,6 +30,14 @@ namespace nt {
 		normal = 0x00000080,
 	};
 
+	const enum pte_t : std::uint16_t {
+		valid = 0x00000001,
+		access = 0x00000020,
+		dirty = 0x00000042,
+		global = 0x00000100,
+		writable = 0x00000800
+	};
+
 	template< flag_t flag >
 	struct driver_t {
 	private:
@@ -334,9 +342,9 @@ namespace nt {
 			auto ppe_ptr{ ( ( ( addr & 0xffffffffffff ) >> 30 ) << 3 ) + page[ ppe_base ] };
 			auto pxe_ptr{ ( ( ( addr & 0xffffffffffff ) >> 39 ) << 3 ) + page[ pxe_base ] };
 
-			if ( !read< std::ptrdiff_t >( pde_ptr ) & 0x1ll
-			  || !read< std::ptrdiff_t >( ppe_ptr ) & 0x1ll
-			  || !read< std::ptrdiff_t >( pxe_ptr ) & 0x1ll )
+			if ( !( read< std::ptrdiff_t >( pde_ptr ) & 0x1ll )
+			  || !( read< std::ptrdiff_t >( ppe_ptr ) & 0x1ll ) 
+			  || !( read< std::ptrdiff_t >( pxe_ptr ) & 0x1ll ) )
 				return 0;
 
 			return read< std::ptrdiff_t >( pte_ptr ) == 0;
@@ -421,10 +429,9 @@ namespace nt {
 			// e8 f3 f8 ef ff				call KiMarkBugCheckRegions
 			//
 
-			while ( read< std::uint8_t >( bug_check - 5 ) != 0x44
-				  || read< std::uint8_t >( bug_check - 4 ) != 0x65
-				  || read< std::uint8_t >( bug_check - 3 ) != 0x1a
-				  || read< std::uint8_t >( bug_check - 2 ) != 0x00
+			while ( read< std::uint8_t >( bug_check - 8 ) != 0x48
+				  || read< std::uint8_t >( bug_check - 7 ) != 0x8b
+				  || read< std::uint8_t >( bug_check - 6 ) != 0x0d
 				  || read< std::uint8_t >( bug_check - 1 ) != 0xe8 )
 				bug_check++;
 
@@ -440,8 +447,8 @@ namespace nt {
 			// 48 8b 05 a5 ac 3c 00		mov rax, cs:MmPteBase
 			//
 
-			while ( read< std::uint8_t >( mark_regions - 5 ) != 0x00
-				  || read< std::uint8_t >( mark_regions - 4 ) != 0x00
+			while ( read< std::uint8_t >( mark_regions - 9 ) != 0x0f
+				  || read< std::uint8_t >( mark_regions - 8 ) != 0x84
 				  || read< std::uint8_t >( mark_regions - 3 ) != 0x48
 				  || read< std::uint8_t >( mark_regions - 2 ) != 0x8b
 				  || read< std::uint8_t >( mark_regions - 1 ) != 0x05 )
@@ -746,6 +753,197 @@ public:
 			return std::make_pair( max_discard.first, max_discard.second * 0x1000 );
 		};
 
+		const std::ptrdiff_t fetch_get_page_addr( ) { 
+			static auto images{ nt::fetch_kernel_modules( ) };
+			if ( images.empty( ) ) {
+				std::wcout << "--+ kernel modules was empty" << std::endl;
+				return 0;
+			}
+
+			static auto alloc_profiles{ fetch_export( images[ L"ntoskrnl.exe" ], L"KeAllocateProcessorProfileStructures" ) };
+			if ( !alloc_profiles ) {
+				std::wcout << "--+ failed to resolve KeAllocateProcessorProfileStructures" << std::endl;
+				return 0;
+			}
+
+			//
+			// 33 d2					xor edx, edx
+			// 49 8b ce				mov rcx, r14
+			// e8 f1 a8 f7 ff		call MmAllocateIndependentPagesEx
+			//
+
+			while ( read< std::uint8_t >( alloc_profiles - 5 ) != 0xd2
+				  || read< std::uint8_t >( alloc_profiles - 4 ) != 0x49
+				  || read< std::uint8_t >( alloc_profiles - 3 ) != 0x8b
+				  || read< std::uint8_t >( alloc_profiles - 2 ) != 0xce
+				  || read< std::uint8_t >( alloc_profiles - 1 ) != 0xe8 )
+				alloc_profiles++;
+
+			static auto alloc_pages{ read< std::int32_t >( alloc_profiles ) + alloc_profiles + 4 };
+			if ( !alloc_pages ) {
+				std::wcout << "--+ failed to resolve MmAllocateIndependentPagesEx" << std::endl;
+				return 0;
+			}
+
+			//
+			// 48 8d 0d 99 bd 36 00		lea rcx, MiSystemPartition ; Load Effective Address
+			// 41 8b d7						mov edx, r15d
+			// e8 31 9b f7 ff				call MiGetPage
+			//
+
+			while ( read< std::uint8_t >( alloc_pages - 9 ) != 0x0d
+				  || read< std::uint8_t >( alloc_pages - 4 ) != 0x41
+				  || read< std::uint8_t >( alloc_pages - 3 ) != 0x8b
+				  || read< std::uint8_t >( alloc_pages - 2 ) != 0xd7
+				  || read< std::uint8_t >( alloc_pages - 1 ) != 0xe8 )
+				alloc_pages++;
+
+			static auto get_page_addr{ read< std::int32_t >( alloc_pages ) + alloc_pages + 4 };
+			if ( !get_page_addr ) {
+				std::wcout << "--+ failed to resolve MiGetPage" << std::endl;
+				return 0;
+			}
+
+			return get_page_addr;
+		}
+		const std::ptrdiff_t fetch_init_pfn_addr( ) { 
+			static auto images{ nt::fetch_kernel_modules( ) };
+			if ( images.empty( ) ) {
+				std::wcout << "--+ kernel modules was empty" << std::endl;
+				return 0;
+			}
+
+			static auto alloc_profiles{ fetch_export( images[ L"ntoskrnl.exe" ], L"KeAllocateProcessorProfileStructures" ) };
+			if ( !alloc_profiles ) {
+				std::wcout << "--+ failed to resolve KeAllocateProcessorProfileStructures" << std::endl;
+				return 0;
+			}
+
+			//
+			// 33 d2					xor edx, edx
+			// 49 8b ce				mov rcx, r14
+			// e8 f1 a8 f7 ff		call MmAllocateIndependentPagesEx
+			//
+
+			while ( read< std::uint8_t >( alloc_profiles - 5 ) != 0xd2
+				  || read< std::uint8_t >( alloc_profiles - 4 ) != 0x49
+				  || read< std::uint8_t >( alloc_profiles - 3 ) != 0x8b
+				  || read< std::uint8_t >( alloc_profiles - 2 ) != 0xce
+				  || read< std::uint8_t >( alloc_profiles - 1 ) != 0xe8 )
+				alloc_profiles++;
+
+			static auto alloc_pages{ read< std::int32_t >( alloc_profiles ) + alloc_profiles + 4 };
+			if ( !alloc_pages ) {
+				std::wcout << "--+ failed to resolve MmAllocateIndependentPagesEx" << std::endl;
+				return 0;
+			}
+
+			//
+			//	44 8b c8				mov r9d, eax
+			//	44 8b c0				mov r8d, eax
+			//	e8 fc 02 00 00		call MiInitializePfn
+			//
+
+			while ( read< std::uint8_t >( alloc_pages - 5 ) != 0xc8
+				  || read< std::uint8_t >( alloc_pages - 4 ) != 0x44
+				  || read< std::uint8_t >( alloc_pages - 3 ) != 0x8b
+				  || read< std::uint8_t >( alloc_pages - 2 ) != 0xc0
+				  || read< std::uint8_t >( alloc_pages - 1 ) != 0xe8 )
+				alloc_pages++;
+
+			static auto init_pfn_addr{ read< std::int32_t >( alloc_pages ) + alloc_pages + 4 };
+			if ( !init_pfn_addr ) {
+				std::wcout << "--+ failed to resolve MiInitializePfn" << std::endl;
+				return 0;
+			}
+
+			return init_pfn_addr;
+		}
+
+		const std::ptrdiff_t fetch_system_partition( ) {
+			static auto images{ nt::fetch_kernel_modules( ) };
+			if ( images.empty( ) ) {
+				std::wcout << "--+ kernel modules was empty" << std::endl;
+				return 0;
+			}
+
+			static auto add_physical{ fetch_export( images[ L"ntoskrnl.exe" ], L"MmAddPhysicalMemory" ) };
+			if ( !add_physical ) {
+				std::wcout << "--+ failed to resolve MmAddPhysicalMemory" << std::endl;
+				return 0;
+			}
+
+			while ( read< std::uint8_t >( add_physical - 5 ) != 0xb6
+				  || read< std::uint8_t >( add_physical - 4 ) != 0xc8
+				  || read< std::uint8_t >( add_physical - 3 ) != 0x48
+				  || read< std::uint8_t >( add_physical - 2 ) != 0x8d
+				  || read< std::uint8_t >( add_physical - 1 ) != 0x0d )
+				add_physical++;
+
+			static auto system_partition{ read< std::int32_t >( add_physical ) + add_physical + 4 };
+			if ( !system_partition ) {
+				std::wcout << "--+ failed to resolve MiSystemPartition" << std::endl;
+				return 0;
+			}
+
+			return system_partition;
+		}
+
+		[[ nodiscard ]]
+		const std::ptrdiff_t get_relocate_addr( ) {
+			static auto images{ nt::fetch_kernel_modules( ) };
+			if ( images.empty( ) ) {
+				std::wcout << "--+ kernel modules was empty" << std::endl;
+				return 0;
+			}
+
+			static auto load_image{ fetch_export( images[ L"ntoskrnl.exe" ], L"MmLoadSystemImage" ) };
+			if ( !load_image ) {
+				std::wcout << "--+ failed to resolve MmLoadSystemImage" << std::endl;
+				return 0;
+			}
+
+			//
+			// 8b d6					mov edx, esi
+			// 48 8b 4c 24 70		mov rcx, [ rsp + 1A0h + var_130 ]
+			// e8 b1 39 0b 00		call MiMapSystemImageWithLargePage
+			//
+
+			while ( read< std::uint8_t >( load_image - 5 ) != 0x8b
+				  || read< std::uint8_t >( load_image - 4 ) != 0x4c
+				  || read< std::uint8_t >( load_image - 3 ) != 0x24
+				  || read< std::uint8_t >( load_image - 2 ) != 0x70
+				  || read< std::uint8_t >( load_image - 1 ) != 0xe8 )
+				load_image++;
+
+			static auto map_image{ read< std::int32_t >( load_image ) + load_image + 4 };
+			if ( !map_image ) {
+				std::wcout << "--+ failed to resolve MiMapSystemImageWithLargePage" << std::endl;
+				return 0;
+			}
+
+			//
+			// 77 cd					ja short loc_fffff80434c9ba77
+			// 48 8b cb				mov rcx, rbx
+			// e8 52 de 03 00		call LdrRelocateImageWithBias
+			//
+
+			while ( read< std::uint8_t >( map_image - 5 ) != 0xcd
+				  || read< std::uint8_t >( map_image - 4 ) != 0x48
+				  || read< std::uint8_t >( map_image - 3 ) != 0x8b
+				  || read< std::uint8_t >( map_image - 2 ) != 0xcb
+				  || read< std::uint8_t >( map_image - 1 ) != 0xe8 )
+				map_image++;
+
+			static auto relocate_addr{ read< std::int32_t >( map_image ) + map_image + 4 };
+			if ( !relocate_addr ) {
+				std::wcout << "--+ failed to resolve LdrRelocateImageWithBias" << std::endl;
+				return 0;
+			}
+
+			return relocate_addr;
+		}
+
 		[[ nodiscard ]]
 		const std::uint8_t map(
 			const std::filesystem::path path
@@ -797,6 +995,31 @@ public:
 			if ( !max_discard.first || max_discard.second < driver_bytes.size( ) ) {
 				std::wcout << "--+ unable to find large enough discard list" << std::endl;
 				return 0;
+			}
+
+			auto pte_addr{ ( ( ( max_discard.first & 0xffffffffffff ) >> 12 ) << 3 ) + fetch_pte_base( ) };
+			if ( !pte_addr ) {
+				std::wcout << "--+ invalid pte addr for max discard" << std::endl;
+			}
+
+			for ( auto ctx{ pte_addr }; ctx < pte_addr + ( ( driver_bytes.size( ) + 0xfff ) >> 12 ); ctx += 0x8 ) {
+				auto page_fn{ call< std::ptrdiff_t >( fetch_get_page_addr( ), fetch_system_partition( ), 0, 0x8 ) };
+				if ( !page_fn ) {
+					std::wcout << "--+ failed to get page frame number" << std::endl;
+					continue;
+				}
+				
+				auto page_id{ fetch_pfn_database( ) + ( page_fn * 0x30 ) };
+				if ( !page_id ) {
+					std::wcout << "--+ failed to get page index" << std::endl;
+					continue;
+				}
+
+				if ( !write< std::ptrdiff_t >( ctx, valid | writable | global | dirty | access )
+				  || !write< std::ptrdiff_t >( ctx + 0x2, page_fn ) )
+					continue;
+				
+				call< std::ptrdiff_t >( fetch_init_pfn_addr( ), page_id, ctx, 0x4, 0x4 );
 			}
 
 			return 1;
